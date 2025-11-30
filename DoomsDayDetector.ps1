@@ -465,6 +465,7 @@ function Start-DoomsdayScan {
     }
     
     $allJarPaths = @()
+    $fileMetadata = @{}
     $processedFiles = 0
     
     foreach ($sysFile in $javaFiles) {
@@ -479,9 +480,18 @@ function Start-DoomsdayScan {
             continue
         }
         
+        $indexNum = 0
         foreach ($index in $indexes) {
+            $indexNum++
             $cleanPath = $index -replace '\\VOLUME\{[^\}]+\}\\', 'C:\'
             $allJarPaths += $cleanPath
+            
+            if (-not $fileMetadata.ContainsKey($cleanPath)) {
+                $fileMetadata[$cleanPath] = @{
+                    SourceFile = $sysFile.Name
+                    IndexNumber = $indexNum
+                }
+            }
         }
     }
     
@@ -565,6 +575,8 @@ function Start-DoomsdayScan {
                 
                 $detections += [PSCustomObject]@{
                     Path = $path
+                    SourceFile = $fileMetadata[$path].SourceFile
+                    IndexNumber = $fileMetadata[$path].IndexNumber
                     Confidence = $result.Confidence
                     IsRenamedJar = $result.IsRenamedJar
                     BytePatterns = $result.BytePatternMatches.Count
@@ -639,6 +651,10 @@ function Start-DoomsdayScan {
         foreach ($detection in $detections) {
             Write-Host "[$detectionNum] " -NoNewline -ForegroundColor Red
             Write-Host $detection.Path -ForegroundColor White
+            Write-Host "    Source File: " -NoNewline
+            Write-Host $detection.SourceFile -ForegroundColor Cyan
+            Write-Host "    Index Number: " -NoNewline
+            Write-Host "#$($detection.IndexNumber)" -ForegroundColor Cyan
             Write-Host "    Confidence: " -NoNewline
             
             switch ($detection.Confidence) {
