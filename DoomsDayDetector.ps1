@@ -483,13 +483,34 @@ function Start-DoomsdayScan {
         $indexNum = 0
         foreach ($index in $indexes) {
             $indexNum++
-            $cleanPath = $index -replace '\\VOLUME\{[^\}]+\}\\', 'C:\'
-            $allJarPaths += $cleanPath
             
-            if (-not $fileMetadata.ContainsKey($cleanPath)) {
-                $fileMetadata[$cleanPath] = @{
-                    SourceFile = $sysFile.Name
-                    IndexNumber = $indexNum
+            if ($index -match '\\VOLUME\{[^\}]+\}\\') {
+                $relativePath = $index -replace '\\VOLUME\{[^\}]+\}\\', ''
+                $drives = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Root -match '^[A-Z]:\\$' }
+                
+                foreach ($drive in $drives) {
+                    $testPath = Join-Path $drive.Root $relativePath
+                    
+                    if (Test-Path $testPath -PathType Leaf) {
+                        $allJarPaths += $testPath
+                        
+                        if (-not $fileMetadata.ContainsKey($testPath)) {
+                            $fileMetadata[$testPath] = @{
+                                SourceFile = $sysFile.Name
+                                IndexNumber = $indexNum
+                            }
+                        }
+                    }
+                }
+            }
+            else {
+                $allJarPaths += $index
+                
+                if (-not $fileMetadata.ContainsKey($index)) {
+                    $fileMetadata[$index] = @{
+                        SourceFile = $sysFile.Name
+                        IndexNumber = $indexNum
+                    }
                 }
             }
         }
