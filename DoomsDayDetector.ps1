@@ -934,12 +934,13 @@ function Start-DoomsdayScan {
         $displayedCount = 0
         foreach ($missingPath in $trulyMissingPaths) {
             # Skip temp files and Java cleanup
-            if ($missingPath -match '\\TEMP\\|\\TMP\\|HSPERFDATA|\.TMP$|\.DLL$|JNA\d+') {
+            # Only skip JNA####.DLL patterns, not ALL .DLLs
+            if ($missingPath -match '\\TEMP\\|\\TMP\\|HSPERFDATA|\.TMP$|JNA\d+\.DLL') {
                 continue
             }
             
-            # Only show JAR and EXE files
-            if ($missingPath -notmatch '\.(JAR|EXE)$') {
+            # Show JAR, EXE, and DLL files
+            if ($missingPath -notmatch '\.(JAR|EXE|DLL)$') {
                 continue
             }
             
