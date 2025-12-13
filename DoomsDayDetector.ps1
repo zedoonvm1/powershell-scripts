@@ -37,7 +37,7 @@ function Show-Banner {
     Write-Host "&" -NoNewline -ForegroundColor Blue
     Write-Host " RL forensics" -ForegroundColor Red
     Write-Host ""
-    Write-Host "                    Doomsday Client Scanner v1.0" -ForegroundColor Cyan
+    Write-Host "                    Doomsday Client Scanner v1.2 (USN Journal)" -ForegroundColor Cyan
     Write-Host ""
 }
 
@@ -45,6 +45,39 @@ function Test-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+# Global debug flag
+$script:DebugMode = $false
+$script:CheckUSN = $true
+
+# Cache for USN journal data
+$script:RecentDeletions = @{}
+$script:USNSearched = $false
+
+function Get-NTFSDrives {
+    $ntfsDrives = @()
+    
+    $drives = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Root -match '^[A-Z]:\\$' }
+    
+    foreach ($drive in $drives) {
+        try {
+            $driveLetter = $drive.Root.Substring(0, 2)
+            
+            # Check if drive is NTFS
+            $volume = Get-Volume -DriveLetter $driveLetter[0] -ErrorAction SilentlyContinue
+            
+            if ($volume -and $volume.FileSystem -eq 'NTFS') {
+                $ntfsDrives += $driveLetter[0]
+            }
+        }
+        catch {
+            # Skip drives that can't be accessed
+            continue
+        }
+    }
+    
+    return $ntfsDrives
 }
 
 Add-Type -TypeDefinition @"
@@ -102,13 +135,171 @@ public class NtdllDecompressor {
 }
 "@
 
+function Get-RecentDeletionsFromUSN {
+    param(
+        [string[]]$DriveLetters,
+        [int]$MinutesBack = 30
+    )
+    
+    if ($script:USNSearched) {
+        return $script:RecentDeletions
+    }
+    
+    $allRecentActivity = @{}
+    
+    foreach ($driveLetter in $DriveLetters) {
+        try {
+            Write-Host "[*] Scanning drive $driveLetter`: for recent file activity (last $MinutesBack minutes)..." -ForegroundColor Cyan
+            
+            $cutoffTime = (Get-Date).AddMinutes(-$MinutesBack)
+            
+            # Run fsutil to get USN journal
+            $usnOutput = & fsutil usn readjournal "$driveLetter`:" 2>$null
+            
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "[!] Unable to read USN Journal on drive $driveLetter`: (may be disabled)" -ForegroundColor Yellow
+                continue
+            }
+            
+            $totalLines = $usnOutput.Count
+            
+            if ($totalLines -eq 0) {
+                Write-Host "[!] No USN Journal data on drive $driveLetter`:" -ForegroundColor Yellow
+                continue
+            }
+            
+            $recentActivity = @{}
+            $activityCount = 0
+            $currentFile = ""
+            $currentTime = $null
+            $currentReason = ""
+            $entriesProcessed = 0
+            
+            foreach ($line in $usnOutput) {
+                # Skip empty lines
+                if ([string]::IsNullOrWhiteSpace($line)) { continue }
+                
+                # Look for "File name" line (with variable spacing)
+                if ($line -match 'File name\s+:\s*(.+)$') {
+                    $currentFile = $Matches[1].Trim()
+                }
+                # Look for "Time stamp" line (with variable spacing)
+                elseif ($line -match 'Time stamp\s+:\s*(.+)$') {
+                    $timeStr = $Matches[1].Trim()
+                    try {
+                        $currentTime = [DateTime]::Parse($timeStr)
+                    } catch {
+                        $currentTime = $null
+                    }
+                }
+                # Look for "Reason" line - accept ANY reason
+                elseif ($line -match 'Reason\s+:\s*(.+)$') {
+                    $entriesProcessed++
+                    $currentReason = $Matches[1].Trim()
+                    
+                    # Check if this entry is within our time window (ANY reason)
+                    if ($currentFile -and $currentTime -and $currentTime -gt $cutoffTime) {
+                        # Store with drive letter prefix to avoid collisions
+                        $fullKey = "$driveLetter`:\$currentFile"
+                        
+                        # If file appears multiple times, keep the most recent
+                        if (-not $recentActivity.ContainsKey($fullKey) -or 
+                            $recentActivity[$fullKey].Timestamp -lt $currentTime) {
+                            
+                            $recentActivity[$fullKey] = @{
+                                Timestamp = $currentTime
+                                Reason = $currentReason
+                                Drive = $driveLetter
+                            }
+                            
+                            $activityCount++
+                        }
+                    }
+                    
+                    # Reset for next entry
+                    $currentFile = ""
+                    $currentTime = $null
+                    $currentReason = ""
+                }
+            }
+            
+            Write-Host "[+] Drive $driveLetter`: - Found $activityCount files with recent activity" -ForegroundColor Green
+            
+            # Merge into overall activity
+            foreach ($key in $recentActivity.Keys) {
+                $allRecentActivity[$key] = $recentActivity[$key]
+            }
+            
+        }
+        catch {
+            Write-Host "[!] Error reading USN Journal on drive $driveLetter`: - $_" -ForegroundColor Yellow
+            continue
+        }
+    }
+    
+    $script:RecentDeletions = $allRecentActivity
+    $script:USNSearched = $true
+    
+    Write-Host ""
+    Write-Host "[+] Total unique files with recent activity across all drives: $($allRecentActivity.Count)" -ForegroundColor Green
+    Write-Host ""
+    
+    return $allRecentActivity
+}
+
+function Test-RecentlyDeleted {
+    param(
+        [string]$FilePath
+    )
+    
+    # Try full path match first
+    if ($script:RecentDeletions.ContainsKey($FilePath)) {
+        return $script:RecentDeletions[$FilePath]
+    }
+    
+    # Try just filename
+    $fileName = [System.IO.Path]::GetFileName($FilePath)
+    
+    # Check if any key ends with this filename
+    foreach ($key in $script:RecentDeletions.Keys) {
+        if ($key -like "*\$fileName") {
+            return $script:RecentDeletions[$key]
+        }
+    }
+    
+    return $null
+}
+
+function Get-PrefetchVersion {
+    param([byte[]]$data)
+    
+    if ($data.Length -lt 8) { return 0 }
+    
+    # Check for SCCA signature at offset 4
+    $sig = [System.Text.Encoding]::ASCII.GetString($data, 4, 4)
+    if ($sig -ne "SCCA") { return 0 }
+    
+    # Version is at offset 0
+    $version = [BitConverter]::ToUInt32($data, 0)
+    return $version
+}
+
 function Get-SystemIndexes {
     param([string]$FilePath)
     
     try {
         $data = [System.IO.File]::ReadAllBytes($FilePath)
         
+        if ($script:DebugMode) {
+            Write-Host "  [DEBUG] File: $([System.IO.Path]::GetFileName($FilePath))" -ForegroundColor Magenta
+            Write-Host "  [DEBUG] Raw size: $($data.Length) bytes" -ForegroundColor Magenta
+        }
+        
         $isCompressed = ($data[0] -eq 0x4D -and $data[1] -eq 0x41 -and $data[2] -eq 0x4D)
+        
+        if ($script:DebugMode) {
+            Write-Host "  [DEBUG] Compressed: $isCompressed" -ForegroundColor Magenta
+        }
         
         if ($isCompressed) {
             $data = [NtdllDecompressor]::Decompress($data)
@@ -116,16 +307,85 @@ function Get-SystemIndexes {
                 Write-Warning "Failed to decompress: $FilePath"
                 return @()
             }
+            
+            if ($script:DebugMode) {
+                Write-Host "  [DEBUG] Decompressed size: $($data.Length) bytes" -ForegroundColor Magenta
+            }
+        }
+        
+        # Validate minimum size
+        if ($data.Length -lt 108) {
+            Write-Warning "File too small after decompression: $FilePath"
+            return @()
+        }
+        
+        # Get prefetch version
+        $version = Get-PrefetchVersion -data $data
+        
+        if ($script:DebugMode) {
+            Write-Host "  [DEBUG] Prefetch version: $version" -ForegroundColor Magenta
         }
         
         $sig = [System.Text.Encoding]::ASCII.GetString($data, 4, 4)
         if ($sig -ne "SCCA") {
-            Write-Warning "Invalid file signature: $FilePath"
+            Write-Warning "Invalid file signature: $FilePath (got: $sig)"
             return @()
         }
         
-        $stringsOffset = [BitConverter]::ToUInt32($data, 100)
-        $stringsSize = [BitConverter]::ToUInt32($data, 104)
+        # Handle different prefetch versions
+        # Version 17 = XP/2003, 23 = Vista/7, 26 = Win8.1, 30 = Win10, 31 = Win11
+        $stringsOffset = 0
+        $stringsSize = 0
+        
+        switch ($version) {
+            17 {
+                # Windows XP/2003
+                $stringsOffset = [BitConverter]::ToUInt32($data, 100)
+                $stringsSize = [BitConverter]::ToUInt32($data, 104)
+            }
+            23 {
+                # Windows Vista/7
+                $stringsOffset = [BitConverter]::ToUInt32($data, 100)
+                $stringsSize = [BitConverter]::ToUInt32($data, 104)
+            }
+            26 {
+                # Windows 8.1
+                $stringsOffset = [BitConverter]::ToUInt32($data, 100)
+                $stringsSize = [BitConverter]::ToUInt32($data, 104)
+            }
+            30 {
+                # Windows 10
+                $stringsOffset = [BitConverter]::ToUInt32($data, 100)
+                $stringsSize = [BitConverter]::ToUInt32($data, 104)
+            }
+            31 {
+                # Windows 11
+                $stringsOffset = [BitConverter]::ToUInt32($data, 100)
+                $stringsSize = [BitConverter]::ToUInt32($data, 104)
+            }
+            default {
+                Write-Warning "Unknown prefetch version $version for: $FilePath"
+                # Try default offsets anyway
+                $stringsOffset = [BitConverter]::ToUInt32($data, 100)
+                $stringsSize = [BitConverter]::ToUInt32($data, 104)
+            }
+        }
+        
+        if ($script:DebugMode) {
+            Write-Host "  [DEBUG] Strings offset: $stringsOffset" -ForegroundColor Magenta
+            Write-Host "  [DEBUG] Strings size: $stringsSize" -ForegroundColor Magenta
+        }
+        
+        # Validate offsets
+        if ($stringsOffset -eq 0 -or $stringsSize -eq 0) {
+            Write-Warning "Invalid string section offsets: $FilePath"
+            return @()
+        }
+        
+        if ($stringsOffset -ge $data.Length -or ($stringsOffset + $stringsSize) -gt $data.Length) {
+            Write-Warning "String section out of bounds: $FilePath (offset: $stringsOffset, size: $stringsSize, data: $($data.Length))"
+            return @()
+        }
         
         $filenames = @()
         $pos = $stringsOffset
@@ -158,10 +418,18 @@ function Get-SystemIndexes {
             if ($filenames.Count -gt 1000) { break }
         }
         
+        if ($script:DebugMode) {
+            Write-Host "  [DEBUG] Extracted $($filenames.Count) filenames" -ForegroundColor Magenta
+        }
+        
         return $filenames
     }
     catch {
         Write-Warning "Error parsing $FilePath : $_"
+        if ($script:DebugMode) {
+            Write-Host "  [DEBUG] Exception: $($_.Exception.GetType().Name)" -ForegroundColor Red
+            Write-Host "  [DEBUG] Message: $($_.Exception.Message)" -ForegroundColor Red
+        }
         return @()
     }
 }
@@ -441,6 +709,12 @@ function Test-DoomsdayClient {
 }
 
 function Start-DoomsdayScan {
+    param(
+        [switch]$Debug
+    )
+    
+    $script:DebugMode = $Debug
+    
     Show-Banner
     
     if (-not (Test-Administrator)) {
@@ -453,20 +727,47 @@ function Start-DoomsdayScan {
         return
     }
     
+    # Detect Windows version
+    $osVersion = [System.Environment]::OSVersion.Version
+    Write-Host "[*] Windows Version: $($osVersion.Major).$($osVersion.Minor) Build $($osVersion.Build)" -ForegroundColor Cyan
+    
+    if ($osVersion.Major -eq 10) {
+        if ($osVersion.Build -ge 22000) {
+            Write-Host "[*] Detected: Windows 11" -ForegroundColor Green
+        } else {
+            Write-Host "[*] Detected: Windows 10" -ForegroundColor Green
+        }
+    }
+    Write-Host ""
+    
     Write-Host "[*] Extracting file indexes..." -ForegroundColor Cyan
     Write-Host ""
     
     $systemPath = "C:\Windows\" + "Pre" + "fetch"
+    
+    if (-not (Test-Path $systemPath)) {
+        Write-Host "[!] Prefetch directory not found: $systemPath" -ForegroundColor Red
+        return
+    }
+    
     $javaFiles = Get-ChildItem -Path $systemPath -Filter "JAVA*.EXE-*.pf" -ErrorAction SilentlyContinue
     
     if ($javaFiles.Count -eq 0) {
-        Write-Host "[!] No relevant files found" -ForegroundColor Yellow
+        Write-Host "[!] No JAVA prefetch files found in $systemPath" -ForegroundColor Yellow
+        Write-Host "[*] This could mean:" -ForegroundColor Yellow
+        Write-Host "    - Java has never been run on this system" -ForegroundColor Gray
+        Write-Host "    - Prefetch files have been cleared" -ForegroundColor Gray
+        Write-Host "    - Prefetch is disabled" -ForegroundColor Gray
         return
     }
+    
+    Write-Host "[+] Found $($javaFiles.Count) JAVA prefetch file(s)" -ForegroundColor Green
+    Write-Host ""
     
     $allJarPaths = @()
     $fileMetadata = @{}
     $processedFiles = 0
+    $successfulParsing = 0
     
     foreach ($sysFile in $javaFiles) {
         $processedFiles++
@@ -474,42 +775,53 @@ function Start-DoomsdayScan {
                       -Status "Processing file $processedFiles of $($javaFiles.Count)" `
                       -PercentComplete (($processedFiles / $javaFiles.Count) * 100)
         
+        if ($script:DebugMode) {
+            Write-Host ""
+            Write-Host "[DEBUG] ======================================" -ForegroundColor Magenta
+        }
+        
         $indexes = Get-SystemIndexes -FilePath $sysFile.FullName
         
         if ($indexes.Count -eq 0) {
+            if ($script:DebugMode) {
+                Write-Host "  [DEBUG] No indexes extracted from $($sysFile.Name)" -ForegroundColor Yellow
+            }
             continue
+        }
+        
+        $successfulParsing++
+        
+        if ($script:DebugMode) {
+            Write-Host "  [DEBUG] Successfully extracted $($indexes.Count) paths" -ForegroundColor Green
         }
         
         $indexNum = 0
         foreach ($index in $indexes) {
             $indexNum++
             
-            if ($index -match '\\VOLUME\{[^\}]+\}\\') {
-                $relativePath = $index -replace '\\VOLUME\{[^\}]+\}\\', ''
-                $drives = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Root -match '^[A-Z]:\\$' }
+            # Strip volume GUID if present, assume C: drive initially
+            if ($index -match '\\VOLUME\{[^\}]+\}\\(.*)$') {
+                $relativePath = $Matches[1]
+                $assumedPath = "C:\$relativePath"
+                $allJarPaths += $assumedPath
                 
-                foreach ($drive in $drives) {
-                    $testPath = Join-Path $drive.Root $relativePath
-                    
-                    if (Test-Path $testPath -PathType Leaf) {
-                        $allJarPaths += $testPath
-                        
-                        if (-not $fileMetadata.ContainsKey($testPath)) {
-                            $fileMetadata[$testPath] = @{
-                                SourceFile = $sysFile.Name
-                                IndexNumber = $indexNum
-                            }
-                        }
+                if (-not $fileMetadata.ContainsKey($assumedPath)) {
+                    $fileMetadata[$assumedPath] = @{
+                        SourceFile = $sysFile.Name
+                        IndexNumber = $indexNum
+                        OriginalPath = $index
                     }
                 }
             }
             else {
+                # No volume GUID, use path as-is
                 $allJarPaths += $index
                 
                 if (-not $fileMetadata.ContainsKey($index)) {
                     $fileMetadata[$index] = @{
                         SourceFile = $sysFile.Name
                         IndexNumber = $indexNum
+                        OriginalPath = $index
                     }
                 }
             }
@@ -519,10 +831,18 @@ function Start-DoomsdayScan {
     Write-Progress -Activity "Extracting Indexes" -Completed
     
     Write-Host ""
-    Write-Host "[+] Total files in size range: $($allJarPaths.Count)" -ForegroundColor Green
+    Write-Host "[+] Prefetch files successfully parsed: $successfulParsing / $processedFiles" -ForegroundColor Green
+    Write-Host "[+] Total file paths extracted: $($allJarPaths.Count)" -ForegroundColor Green
     
     if ($allJarPaths.Count -eq 0) {
-        Write-Host "[!] No files found in 200KB-15MB range" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "[!] No file paths could be extracted from prefetch files" -ForegroundColor Yellow
+        Write-Host "[*] Possible issues:" -ForegroundColor Yellow
+        Write-Host "    - Prefetch parsing failed (incompatible format)" -ForegroundColor Gray
+        Write-Host "    - No Java applications with file references" -ForegroundColor Gray
+        Write-Host ""
+        Write-Host "[*] Try running with -Debug flag for more information:" -ForegroundColor Cyan
+        Write-Host "    .\doomsday-scanner-usn.ps1 -Debug" -ForegroundColor White
         return
     }
     
@@ -530,53 +850,133 @@ function Start-DoomsdayScan {
     Write-Host "[+] Unique files to scan: $($uniquePaths.Count)" -ForegroundColor Green
     Write-Host ""
     
-    Write-Host "[*] Scanning files for Doomsday Client..." -ForegroundColor Cyan
+    Write-Host "[*] Checking file existence across all drives..." -ForegroundColor Cyan
     Write-Host ""
     
-    $existingPaths = @()
-    $missingCount = 0
-    
-    Write-Host "[*] Checking file existence..." -ForegroundColor Cyan
-    Write-Host ""
-    
+    $existingPaths = @{}  # Store path -> actual location
+    $trulyMissingPaths = @()
     $checkCount = 0
+    $outsideRangeCount = 0
+    $resolvedToDifferentDrive = 0
+    
+    # Get all available drives
+    $allDrives = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Root -match '^[A-Z]:\\$' } | ForEach-Object { $_.Root.Substring(0, 1) }
+    
     foreach ($path in $uniquePaths) {
         $checkCount++
         
+        $foundPath = $null
+        
+        # First, check if file exists at the given path (usually C:)
         if (Test-Path $path -PathType Leaf) {
-            if (Test-FileInSizeRange -Path $path -MinBytes 200KB -MaxBytes 15MB) {
-                $existingPaths += $path
+            $foundPath = $path
+        }
+        else {
+            # File doesn't exist at assumed location
+            # Try to find it on other drives
+            if ($path -match '^[A-Z]:\\(.*)$') {
+                $relativePath = $Matches[1]
+                
+                # Try each drive
+                foreach ($drive in $allDrives) {
+                    $testPath = "$drive`:\$relativePath"
+                    
+                    if (Test-Path $testPath -PathType Leaf) {
+                        $foundPath = $testPath
+                        $resolvedToDifferentDrive++
+                        
+                        if ($script:DebugMode) {
+                            Write-Host "  [DEBUG] Found on different drive: $testPath (assumed $path)" -ForegroundColor Cyan
+                        }
+                        break
+                    }
+                }
             }
-        } else {
-            $extension = [System.IO.Path]::GetExtension($path).ToUpper()
+        }
+        
+        if ($foundPath) {
+            # File exists somewhere
+            $fileSize = (Get-Item $foundPath -ErrorAction SilentlyContinue).Length
             
-            if ($path -match '\.' -and $extension -ne ".LOG" -and $extension -ne ".TMP") {
-                $missingCount++
-                Write-Host "  [SKIPPED] File deleted [$missingCount]: " -ForegroundColor Yellow -NoNewline
-                Write-Host $path -ForegroundColor Gray
+            if ($fileSize -ge 200KB -and $fileSize -le 15MB) {
+                $existingPaths[$path] = $foundPath
+            } else {
+                $outsideRangeCount++
+                if ($script:DebugMode) {
+                    $sizeMB = [math]::Round($fileSize / 1MB, 2)
+                    Write-Host "  [DEBUG] Skipped (size: $sizeMB MB): $foundPath" -ForegroundColor Gray
+                }
             }
+        }
+        else {
+            # File doesn't exist on ANY drive - truly missing
+            $trulyMissingPaths += $path
         }
     }
     
+    $missingCount = $trulyMissingPaths.Count
+    
     Write-Host ""
-    Write-Host "[+] Total files checked: $checkCount" -ForegroundColor Cyan
-    Write-Host "[+] Files exist and in size range (200KB-15MB): $($existingPaths.Count)" -ForegroundColor Green
-    Write-Host "[!] Files deleted/missing: $missingCount" -ForegroundColor Yellow
+    Write-Host "[+] Total paths checked: $checkCount" -ForegroundColor Cyan
+    Write-Host "[+] Files found and in size range (200KB-15MB): $($existingPaths.Count)" -ForegroundColor Green
+    if ($resolvedToDifferentDrive -gt 0) {
+        Write-Host "[+] Files resolved to different drives: $resolvedToDifferentDrive" -ForegroundColor Cyan
+    }
+    Write-Host "[!] Files outside size range: $outsideRangeCount" -ForegroundColor Gray
+    Write-Host "[!] Files truly missing (not on any drive): $missingCount" -ForegroundColor Yellow
     Write-Host ""
+    
+    # Show truly missing files (filter out temp files, focus on JARs/EXEs)
+    if ($missingCount -gt 0) {
+        Write-Host "[*] Truly missing files (deleted from all drives):" -ForegroundColor Cyan
+        Write-Host ""
+        
+        $displayedCount = 0
+        foreach ($missingPath in $trulyMissingPaths) {
+            # Skip temp files and Java cleanup
+            if ($missingPath -match '\\TEMP\\|\\TMP\\|HSPERFDATA|\.TMP$|\.DLL$|JNA\d+') {
+                continue
+            }
+            
+            # Only show JAR and EXE files
+            if ($missingPath -notmatch '\.(JAR|EXE)$') {
+                continue
+            }
+            
+            $displayedCount++
+            Write-Host "  [DELETED] " -ForegroundColor Yellow -NoNewline
+            Write-Host $missingPath -ForegroundColor White
+            Write-Host "      Source: " -NoNewline
+            Write-Host "$($fileMetadata[$missingPath].SourceFile)" -ForegroundColor Cyan
+        }
+        
+        if ($displayedCount -eq 0) {
+            Write-Host "  No suspicious deletions found (only temp files deleted)" -ForegroundColor Green
+        }
+        
+        Write-Host ""
+    }
     
     if ($existingPaths.Count -eq 0) {
         Write-Host "[!] No files exist to scan" -ForegroundColor Yellow
+        Write-Host "[*] All extracted paths point to files that either:" -ForegroundColor Yellow
+        Write-Host "    - No longer exist (deleted)" -ForegroundColor Gray
+        Write-Host "    - Are outside the 200KB-15MB size range" -ForegroundColor Gray
         return
     }
+    
+    Write-Host "[*] Scanning files for Doomsday Client..." -ForegroundColor Cyan
+    Write-Host ""
     
     $detections = @()
     $scanned = 0
     $skipped = 0
     
-    foreach ($path in $existingPaths) {
+    foreach ($assumedPath in $existingPaths.Keys) {
+        $actualPath = $existingPaths[$assumedPath]
         $scanned++
         
-        $filename = [System.IO.Path]::GetFileName($path)
+        $filename = [System.IO.Path]::GetFileName($actualPath)
         
         Write-Progress -Activity "Scanning for Doomsday Client" `
                       -Status "[$scanned/$($existingPaths.Count)]" `
@@ -585,7 +985,7 @@ function Start-DoomsdayScan {
         Write-Host "`r[$scanned/$($existingPaths.Count)]" -NoNewline -ForegroundColor Cyan
         
         try {
-            $result = Test-DoomsdayClient -Path $path
+            $result = Test-DoomsdayClient -Path $actualPath
             
             if ($result.Error -and $result.Error -like "Skipped:*") {
                 $skipped++
@@ -595,9 +995,9 @@ function Start-DoomsdayScan {
                 Write-Host "`r                              `r" -NoNewline
                 
                 $detections += [PSCustomObject]@{
-                    Path = $path
-                    SourceFile = $fileMetadata[$path].SourceFile
-                    IndexNumber = $fileMetadata[$path].IndexNumber
+                    Path = $actualPath
+                    SourceFile = $fileMetadata[$assumedPath].SourceFile
+                    IndexNumber = $fileMetadata[$assumedPath].IndexNumber
                     Confidence = $result.Confidence
                     IsRenamedJar = $result.IsRenamedJar
                     BytePatterns = $result.BytePatternMatches.Count
@@ -606,7 +1006,7 @@ function Start-DoomsdayScan {
                 }
                 
                 Write-Host "[!] DETECTION: " -ForegroundColor Red -NoNewline
-                Write-Host $path
+                Write-Host $actualPath
                 Write-Host "    Confidence: " -NoNewline
                 
                 switch ($result.Confidence) {
@@ -644,6 +1044,7 @@ function Start-DoomsdayScan {
     Write-Host "Files exist: $($existingPaths.Count)"
     Write-Host "Files scanned: $scanned"
     Write-Host "Files skipped (>30 classes): $skipped" -ForegroundColor Gray
+    
     Write-Host "Doomsday Client detections: " -NoNewline
     
     if ($detections.Count -gt 0) {
@@ -715,6 +1116,12 @@ function Start-DoomsdayScan {
     }
     
     Write-Host ""
+    
+    if ($script:DebugMode) {
+        Write-Host "[DEBUG MODE] Scan completed with debugging enabled" -ForegroundColor Magenta
+    }
 }
 
+# Run the scan
+# To enable debug mode, use: Start-DoomsdayScan -Debug
 Start-DoomsdayScan
