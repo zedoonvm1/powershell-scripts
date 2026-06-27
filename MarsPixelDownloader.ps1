@@ -62,6 +62,7 @@ $Groups = [ordered]@{
         'https://www.nirsoft.net/utils/taskschedulerview-x64.zip'
         'https://www.nirsoft.net/utils/uninstallview-x64.zip'
         'https://www.nirsoft.net/utils/usbdrivelog.zip'
+        'https://www.nirsoft.net/utils/networkusageview-x64.zip'
     )
     'Eric Zimmerman' = @(
         'https://download.ericzimmermanstools.com/net9/PECmd.zip'
@@ -75,6 +76,9 @@ $Groups = [ordered]@{
         'https://download.ericzimmermanstools.com/net9/ShellBagsExplorer.zip'
         'https://download.ericzimmermanstools.com/net9/TimelineExplorer.zip'
         'https://builds.dotnet.microsoft.com/dotnet/Sdk/9.0.308/dotnet-sdk-9.0.308-win-x64.exe'
+        'https://download.ericzimmermanstools.com/net9/SBECmd.zip'
+		'https://download.ericzimmermanstools.com/net9/WxTCmd.zip'
+		'https://download.ericzimmermanstools.com/net9/AmcacheParser.zip'
     )
     'Generic Tools' = @(
         'https://github.com/winsiderss/si-builds/releases/download/3.2.25275.112/systeminformer-build-canary-setup.exe'
@@ -93,6 +97,9 @@ $Groups = [ordered]@{
         'https://download.sysinternals.com/files/TCPView.zip'
         'https://github.com/Yamato-Security/hayabusa/releases/download/v3.7.0/hayabusa-3.7.0-win-x64.zip'
         'https://github.com/ItzIceHere/RedLotus-Task-Sentinel/releases/download/RL/RedLotusTaskSentinel.exe'
+        'https://github.com/Velocidex/WinPmem/releases/download/v4.0.rc1/go-winpmem_amd64_1.0-rc2_signed.exe'
+        'https://github.com/zedoonvm1/unfinishedtools/releases/download/beta/MarsPixelDumpAnalyzer.exe'
+        'https://github.com/RLDuck/Registry-Scanner/releases/download/1.0/RegistryScanner.exe'
     )
     'Red Lotus' = @(
         'https://github.com/ItzIceHere/RedLotus-Task-Sentinel/releases/download/RL/RedLotusTaskSentinel.exe'
@@ -102,6 +109,10 @@ $Groups = [ordered]@{
     'Orbdiff' = @(
         'https://github.com/Orbdiff/BAMReveal/releases/download/v1.2.5/BAMReveal.exe'
         'https://github.com/Orbdiff/PrefetchView/releases/download/v1.6.6/pv++.exe'
+        'https://github.com/Orbdiff/MFT-HardLink/releases/download/v1.2/HardLink.exe'
+    )
+    'Detect' = @(
+        'https://detect.ac/tool/ToolsDownloader++'
     )
 }
 
