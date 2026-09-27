@@ -98,8 +98,9 @@ $Groups = [ordered]@{
         'https://github.com/Yamato-Security/hayabusa/releases/download/v3.7.0/hayabusa-3.7.0-win-x64.zip'
         'https://github.com/ItzIceHere/RedLotus-Task-Sentinel/releases/download/RL/RedLotusTaskSentinel.exe'
         'https://github.com/Velocidex/WinPmem/releases/download/v4.0.rc1/go-winpmem_amd64_1.0-rc2_signed.exe'
-        'https://github.com/zedoonvm1/unfinishedtools/releases/download/beta/MarsPixelDumpAnalyzer.exe'
-        'https://github.com/RLDuck/Registry-Scanner/releases/download/1.0/RegistryScanner.exe'
+        'https://github.com/zedoonvm1/MarsPixelDumpAnalyzer/releases/download/Dev/MarsPixelDumpAnalyzer.exe'
+        'https://github.com/Inkenal/RegistryScanner/releases/download/main/RegistryScanner.exe'
+		'https://github.com/Inkenal/TaskParser/releases/download/main/VigilsTaskParser.exe'
     )
     'Red Lotus' = @(
         'https://github.com/ItzIceHere/RedLotus-Task-Sentinel/releases/download/RL/RedLotusTaskSentinel.exe'
