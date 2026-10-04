@@ -12,7 +12,21 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 
 $ProgressPreference = 'SilentlyContinue'
 
-# ── ANSI palette ──────────────────────────────────────────────────────────────
+# ── Required Assemblies & Connection Optimizations ───────────────────────────
+Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
+Add-Type -AssemblyName System.IO.Compression -ErrorAction SilentlyContinue
+Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+
+try {
+    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]'Tls12, Tls13'
+} catch {
+    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+}
+[System.Net.ServicePointManager]::DefaultConnectionLimit = 64
+[System.Net.ServicePointManager]::Expect100Continue = $false
+[System.Net.ServicePointManager]::UseNagleAlgorithm = $false
+
+# ── ANSI palette (MarsPixel) ──────────────────────────────────────────────────
 $e          = [char]27
 $Orange     = "${e}[38;2;255;140;0m"
 $Gold       = "${e}[38;2;255;215;0m"
@@ -28,89 +42,53 @@ $Bold       = "${e}[1m"
 
 # ── Tool groups ───────────────────────────────────────────────────────────────
 $Groups = [ordered]@{
+    'Orbdiff' = @(
+        'https://github.com/Orbdiff/PrefetchView/releases/download/v1.6.8/pv++.exe'
+        'https://github.com/Orbdiff/BAMReveal/releases/download/v1.3.1/BAMReveal.exe'
+        'https://github.com/Orbdiff/MFT-HardLink/releases/download/v1.2/HardLink.exe'
+        'https://github.com/Orbdiff/Fileless/releases/download/v1.3/fileless.exe'
+        'https://github.com/Orbdiff/StringsParser/releases/download/v1.2.1b/stringsparser.1.2.1b.exe'
+        'https://github.com/Orbdiff/AmcacheParser/releases/download/v1.0/AmcacheParser.exe'
+        'https://github.com/Orbdiff/UserAssistView/releases/download/v1.0/UserAssistView.exe'
+        'https://github.com/Orbdiff/USBDetector/releases/download/v1.1/USBDetector.exe'
+        'https://github.com/Orbdiff/PFTrace/releases/download/v1.0.1/PFTrace.exe'
+        'https://github.com/Orbdiff/JARParser/releases/download/v1.2/JARParser.exe'
+        'https://github.com/Orbdiff/InjGen/releases/download/fork/InjGen.exe'
+    )
+    'Tonynoh' = @(
+        'https://github.com/MeowTonynoh/MeowClientFucker/releases/download/V1.1/MeowClientFucker.exe'
+        'https://github.com/MeowTonynoh/MeowResolver/releases/download/v.1.1/MeowResolver.exe'
+        'https://github.com/MeowTonynoh/MeowImportsChecker/releases/download/MeowImportsChecker/MeowImportsChecker.exe'
+    )
     'Spokwn' = @(
         'https://github.com/spokwn/JournalTrace/releases/latest/download/JournalTrace.exe'
-        'https://github.com/spokwn/PathsParser/releases/latest/download/PathsParser.exe'
-        'https://github.com/spokwn/BAM-parser/releases/latest/download/BAMParser.exe'
-        'https://github.com/spokwn/prefetch-parser/releases/latest/download/PrefetchParser.exe'
-        'https://github.com/spokwn/pcasvc-executed/releases/download/v0.8.7/PcaSvcExecuted.exe'
-        'https://github.com/spokwn/ActivitiesCache-execution/releases/download/v0.6.5/ActivitiesCacheParser.exe'
-        'https://github.com/spokwn/Replaceparser/releases/latest/download/Replaceparser.exe'
-        'https://github.com/spokwn/BamDeletedKeys/releases/latest/download/BamDeletedKeys.exe'
-        'https://github.com/spokwn/Tool/releases/latest/download/espouken.exe'
         'https://github.com/spokwn/KernelLiveDumpTool/releases/download/v1.1/KernelLiveDumpTool.exe'
+        'https://github.com/spokwn/PathsParser/releases/download/v1.2/PathsParser.exe'
     )
     'Nirsoft' = @(
-        'https://www.nirsoft.net/utils/winprefetchview-x64.zip'
         'https://www.nirsoft.net/utils/lastactivityview.zip'
-        'https://www.nirsoft.net/utils/executedprogramslist.zip'
-        'https://www.nirsoft.net/utils/userassistview.zip'
-        'https://www.nirsoft.net/utils/alternatestreamview-x64.zip'
-        'https://www.nirsoft.net/utils/hashmyfiles-x64.zip'
-        'https://www.nirsoft.net/utils/jumplistsview.zip'
-        'https://www.nirsoft.net/utils/opensavefilesview-x64.zip'
-        'https://www.nirsoft.net/utils/usbdeview-x64.zip'
-        'https://www.nirsoft.net/utils/turnedontimesview.zip'
-        'https://www.nirsoft.net/utils/regscanner-x64.zip'
-        'https://www.nirsoft.net/utils/browserdownloadsview-x64.zip'
-        'https://www.nirsoft.net/utils/clipboardic.zip'
-        'https://www.nirsoft.net/utils/driverview-x64.zip'
-        'https://www.nirsoft.net/utils/fileaccesserrorview-x64.zip'
-        'https://www.nirsoft.net/utils/previousfilesrecovery-x64.zip'
-        'https://www.nirsoft.net/utils/recentfilesview.zip'
-        'https://www.nirsoft.net/utils/shellbagsview.zip'
-        'https://www.nirsoft.net/utils/taskschedulerview-x64.zip'
-        'https://www.nirsoft.net/utils/uninstallview-x64.zip'
-        'https://www.nirsoft.net/utils/usbdrivelog.zip'
-        'https://www.nirsoft.net/utils/networkusageview-x64.zip'
-    )
-    'Eric Zimmerman' = @(
-        'https://download.ericzimmermanstools.com/net9/PECmd.zip'
-        'https://download.ericzimmermanstools.com/net9/MFTECmd.zip'
-        'https://download.ericzimmermanstools.com/net9/JLECmd.zip'
-        'https://download.ericzimmermanstools.com/net9/SrumECmd.zip'
-        'https://download.ericzimmermanstools.com/net9/bstrings.zip'
-        'https://download.ericzimmermanstools.com/net9/RecentFileCacheParser.zip'
-        'https://download.ericzimmermanstools.com/net9/JumpListExplorer.zip'
-        'https://download.ericzimmermanstools.com/net9/RegistryExplorer.zip'
-        'https://download.ericzimmermanstools.com/net9/ShellBagsExplorer.zip'
-        'https://download.ericzimmermanstools.com/net9/TimelineExplorer.zip'
-        'https://builds.dotnet.microsoft.com/dotnet/Sdk/9.0.308/dotnet-sdk-9.0.308-win-x64.exe'
-        'https://download.ericzimmermanstools.com/net9/SBECmd.zip'
-		'https://download.ericzimmermanstools.com/net9/WxTCmd.zip'
-		'https://download.ericzimmermanstools.com/net9/AmcacheParser.zip'
+
     )
     'Generic Tools' = @(
-        'https://github.com/winsiderss/si-builds/releases/download/3.2.25275.112/systeminformer-build-canary-setup.exe'
+        'https://github.com/winsiderss/si-builds/releases/download/4.0.26245.218/systeminformer-build-canary-setup.exe'
         'https://www.voidtools.com/Everything-1.4.1.1029.x64-Setup.exe'
-        'https://www.dropbox.com/scl/fi/q428cz9l0uq50bg3azh57/AccessData_FTK_Imager_4.7.1.exe?rlkey=o6w5ot98zb3wpo12n4rlwowhb&st=230sgk3i&dl=1'
-        'https://download.ccleaner.com/rcsetup154.exe'
-        'https://github.com/horsicq/DIE-engine/releases/download/3.10/die_win64_portable_3.10_x64.zip'
-        'https://mh-nexus.de/downloads/HxDPortableSetup.zip'
-        'https://www.winitor.com/tools/pestudio/current/pestudio.zip'
-        'https://download.sysinternals.com/files/Strings.zip'
-        'https://github.com/deathmarine/Luyten/releases/download/v0.5.4_Rebuilt_with_Latest_depenencies/luyten-0.5.4.exe'
-        'https://github.com/Col-E/Recaf/releases/download/2.21.14/recaf-2.21.14-J8-jar-with-dependencies.jar'
-        'https://download.sysinternals.com/files/ProcessExplorer.zip'
-        'https://download.sysinternals.com/files/Autoruns.zip'
-        'https://download.sysinternals.com/files/ProcessMonitor.zip'
-        'https://download.sysinternals.com/files/TCPView.zip'
-        'https://github.com/Yamato-Security/hayabusa/releases/download/v3.7.0/hayabusa-3.7.0-win-x64.zip'
-        'https://github.com/ItzIceHere/RedLotus-Task-Sentinel/releases/download/RL/RedLotusTaskSentinel.exe'
-        'https://github.com/Velocidex/WinPmem/releases/download/v4.0.rc1/go-winpmem_amd64_1.0-rc2_signed.exe'
-        'https://github.com/zedoonvm1/MarsPixelDumpAnalyzer/releases/download/Dev/MarsPixelDumpAnalyzer.exe'
         'https://github.com/Inkenal/RegistryScanner/releases/download/main/RegistryScanner.exe'
-		'https://github.com/Inkenal/TaskParser/releases/download/main/VigilsTaskParser.exe'
+        'https://github.com/Inkenal/TaskParser/releases/download/main/VigilsTaskParser.exe'
+        'https://github.com/horsicq/DIE-engine/releases/download/3.10/die_win64_portable_3.10_x64.zip'
+        'https://github.com/deathmarine/Luyten/releases/download/v0.5.4_Rebuilt_with_Latest_depenencies/luyten-0.5.4.exe'
+        'https://github.com/zedoonvm1/MarsPixelDumpAnalyzer/releases/download/Dev/MarsPixelDumpAnalyzer.exe'
+        'https://mh-nexus.de/downloads/HxDPortableSetup.zip'
+        'https://github.com/Sorted1/StormSS-Fuser-Finder/releases/download/Main/Storm.Fuser.Finder.zip'
+        'https://github.com/Yamato-Security/hayabusa/releases/download/v4.1.0/hayabusa-4.1.0-win-x64.zip'
+        'https://github.com/Col-E/Recaf/releases/download/2.21.14/recaf-2.21.14-J8-jar-with-dependencies.jar'
+        'https://github.com/piespeas/MSC-Event-Viewer/releases/download/BETA/Event.Viewer.MSC.exe'
     )
-    'Red Lotus' = @(
-        'https://github.com/ItzIceHere/RedLotus-Task-Sentinel/releases/download/RL/RedLotusTaskSentinel.exe'
-        'https://github.com/ItzIceHere/RedLotus-Mod-Analyzer/releases/download/RL/RedLotusModAnalyzer.exe'
-        'https://github.com/ItzIceHere/RedLotusAltChecker/releases/download/RL/RedLotusAltChecker.exe'
-    )
-    'Orbdiff' = @(
-        'https://github.com/Orbdiff/BAMReveal/releases/download/v1.2.5/BAMReveal.exe'
-        'https://github.com/Orbdiff/PrefetchView/releases/download/v1.6.6/pv++.exe'
-        'https://github.com/Orbdiff/MFT-HardLink/releases/download/v1.2/HardLink.exe'
+    'Eric Zimmerman' = @(
+        'https://download.ericzimmermanstools.com/net9/SrumECmd.zip'
+        'https://download.ericzimmermanstools.com/net9/MFTECmd.zip'
+        'https://download.ericzimmermanstools.com/net9/TimelineExplorer.zip'
+        'https://download.ericzimmermanstools.com/net9/RegistryExplorer.zip'
+        'https://builds.dotnet.microsoft.com/dotnet/Sdk/9.0.308/dotnet-sdk-9.0.308-win-x64.exe'
     )
     'Detect' = @(
         'https://detect.ac/tool/ToolsDownloader++'
@@ -125,47 +103,142 @@ function Get-NextSSFolder {
 }
 
 function Get-FilenameFromUrl {
-    param([string]$Url)
+    param(
+        [string]$Url,
+        [System.Net.Http.HttpResponseMessage]$Response = $null
+    )
+
+    if ($Response -and $Response.Content.Headers.ContentDisposition -and -not [string]::IsNullOrWhiteSpace($Response.Content.Headers.ContentDisposition.FileName)) {
+        return $Response.Content.Headers.ContentDisposition.FileName.Trim('"')
+    }
+
+    if ($Response -and $Response.RequestMessage -and $Response.RequestMessage.RequestUri) {
+        $finalPath = $Response.RequestMessage.RequestUri.AbsolutePath
+        $finalName = [System.Uri]::UnescapeDataString([System.IO.Path]::GetFileName($finalPath))
+        if (-not [string]::IsNullOrWhiteSpace($finalName) -and [System.IO.Path]::HasExtension($finalName)) {
+            return $finalName
+        }
+    }
+
+    if ($Url -match '/ToolsDownloader\+\+$') {
+        return 'ToolsDownloader++.exe'
+    }
+
     $path = ([System.Uri]$Url).AbsolutePath
     return [System.Uri]::UnescapeDataString([System.IO.Path]::GetFileName($path))
+}
+
+# ── Shared HTTP client (one connection pool for the whole run) ────────────────
+# Connections + TLS sessions to github.com / objects.githubusercontent.com are reused
+# instead of being re-handshaked for every file.
+$HttpHandler = [System.Net.Http.SocketsHttpHandler]::new()
+$HttpHandler.PooledConnectionLifetime       = [TimeSpan]::FromMinutes(5)
+$HttpHandler.EnableMultipleHttp2Connections = $true
+$HttpHandler.AutomaticDecompression         = [System.Net.DecompressionMethods]'GZip, Deflate, Brotli'
+$HttpHandler.ConnectTimeout                 = [TimeSpan]::FromSeconds(15)
+
+$HttpClient = [System.Net.Http.HttpClient]::new($HttpHandler)
+$HttpClient.Timeout = [TimeSpan]::FromMinutes(10)
+$HttpClient.DefaultRequestHeaders.UserAgent.ParseAdd('MarsPixel-ToolsDownloader/2.0')
+
+$BufferSize = 1048576   # 1 MB writes
+
+# Zip extraction runs on a background thread so the NEXT download starts immediately.
+# Downloads themselves stay strictly one at a time.
+$ExtractBlock = {
+    param($Zip, $Dir)
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+        [System.IO.Compression.ZipFile]::ExtractToDirectory($Zip, $Dir)
+        $true
+    } catch {
+        try {
+            if (Test-Path $Dir) { Remove-Item $Dir -Recurse -Force -ErrorAction SilentlyContinue }
+            $null = New-Item -ItemType Directory -Path $Dir -Force
+            Expand-Archive -Path $Zip -DestinationPath $Dir -Force
+            $true
+        } catch { $false }
+    } finally {
+        Remove-Item -Path $Zip -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Invoke-FileDownload {
     param(
         [string]$Url,
         [string]$GroupFolder,
-        [System.Collections.Generic.List[string]]$FailedList
+        [System.Collections.Generic.List[string]]$FailedList,
+        [System.Collections.Generic.List[object]]$ExtractList
     )
 
     $filename = Get-FilenameFromUrl -Url $Url
-    $isZip    = $filename -match '\.zip$'
+    if ([string]::IsNullOrWhiteSpace($filename)) {
+        Write-Host "    ${Red}✗ URL has no downloadable filename: $Url${Reset}"
+        $FailedList.Add($Url)
+        return
+    }
 
-    if ($isZip) {
-        $baseName   = [System.IO.Path]::GetFileNameWithoutExtension($filename)
-        $tempZip    = Join-Path $GroupFolder $filename
-        $extractDir = Join-Path $GroupFolder $baseName
-        Write-Host "    ${DkOrange}↓ ${Orange}$filename${Reset} " -NoNewline
+    Write-Host "    ${DkOrange}↓ ${Orange}$filename${Reset} " -NoNewline
+
+    $ok      = $false
+    $pending = $null
+
+    # Up to 3 attempts per file.
+    for ($attempt = 1; $attempt -le 3 -and -not $ok; $attempt++) {
+        $targetFile = $null
+        $tempZip    = $null
         try {
-            Invoke-WebRequest -Uri $Url -OutFile $tempZip -UseBasicParsing -ErrorAction Stop
-            $null = New-Item -ItemType Directory -Path $extractDir -Force
-            Expand-Archive -Path $tempZip -DestinationPath $extractDir -Force
-            Remove-Item -Path $tempZip -Force
-            Write-Host "${Green}✓${Reset}"
+            $response = $HttpClient.GetAsync($Url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+            [void]$response.EnsureSuccessStatusCode()
+
+            $betterName = Get-FilenameFromUrl -Url $Url -Response $response
+            if (-not [string]::IsNullOrWhiteSpace($betterName)) { $filename = $betterName }
+
+            $isZip    = $filename -match '\.zip$'
+            $baseName = [System.IO.Path]::GetFileNameWithoutExtension($filename)
+            $ext      = [System.IO.Path]::GetExtension($filename)
+
+            # Reserve a unique path atomically (CreateNew).
+            $n = 1
+            while ($true) {
+                $suffix     = if ($n -eq 1) { '' } else { "_$n" }
+                $dest       = Join-Path $GroupFolder ("{0}{1}{2}" -f $baseName, $suffix, $ext)
+                $extractDir = Join-Path $GroupFolder ("{0}{1}" -f $baseName, $suffix)
+                if ($isZip -and (Test-Path $extractDir)) { $n++; continue }
+                try {
+                    $fs = [System.IO.FileStream]::new($dest, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None, $BufferSize, [System.IO.FileOptions]::SequentialScan)
+                    break
+                } catch [System.IO.IOException] { $n++ }
+            }
+            if ($isZip) { $tempZip = $dest } else { $targetFile = $dest }
+
+            $ns = $null
+            try {
+                $ns = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+                $ns.CopyTo($fs, $BufferSize)
+            } finally {
+                $fs.Dispose()
+                if ($ns) { $ns.Dispose() }
+                $response.Dispose()
+            }
+
+            if ($isZip) {
+                $pending = Start-ThreadJob -ScriptBlock $ExtractBlock -ArgumentList $tempZip, $extractDir
+            }
+            $ok = $true
         } catch {
-            Write-Host "${Red}✗${Reset}"
-            $FailedList.Add($Url)
-            if (Test-Path $tempZip) { Remove-Item -Path $tempZip -Force -ErrorAction SilentlyContinue }
+            if ($targetFile -and (Test-Path $targetFile)) { Remove-Item -Path $targetFile -Force -ErrorAction SilentlyContinue }
+            if ($tempZip -and (Test-Path $tempZip))       { Remove-Item -Path $tempZip -Force -ErrorAction SilentlyContinue }
+            if ($attempt -lt 3) { Start-Sleep -Milliseconds (400 * $attempt) }
         }
+    }
+
+    if ($ok) {
+        Write-Host "${Green}✓${Reset}"
+        if ($pending) { $ExtractList.Add([PSCustomObject]@{ Job = $pending; Url = $Url }) }
     } else {
-        $destPath = Join-Path $GroupFolder $filename
-        Write-Host "    ${DkOrange}↓ ${Orange}$filename${Reset} " -NoNewline
-        try {
-            Invoke-WebRequest -Uri $Url -OutFile $destPath -UseBasicParsing -ErrorAction Stop
-            Write-Host "${Green}✓${Reset}"
-        } catch {
-            Write-Host "${Red}✗${Reset}"
-            $FailedList.Add($Url)
-        }
+        Write-Host "${Red}✗${Reset}"
+        $FailedList.Add($Url)
     }
 }
 
@@ -205,6 +278,13 @@ Show-Banner
 
 $ssFolder   = Get-NextSSFolder
 $totalTools = ($Groups.Values | ForEach-Object { $_.Count } | Measure-Object -Sum).Sum
+if (-not $totalTools) { $totalTools = 0 }
+
+if ($Groups.Count -eq 0 -or $totalTools -eq 0) {
+    Write-Host "  ${Gray}No tools configured. Add groups to `$Groups and re-run.${Reset}"
+    Write-Host ""
+    exit 0
+}
 
 Write-Host "  ${Orange}Output folder  ${Gold}$ssFolder${Reset}"
 Write-Host "  ${Orange}Total tools    ${Gold}$totalTools${Reset} ${Gray}across $($Groups.Count) groups${Reset}"
@@ -294,8 +374,9 @@ if (-not (Get-Command -Name 'Add-MpPreference' -ErrorAction SilentlyContinue)) {
     }
 }
 
-# ── Download ──────────────────────────────────────────────────────────────────
-$failed = [System.Collections.Generic.List[string]]::new()
+# ── Download (strictly one by one) ────────────────────────────────────────────
+$failed      = [System.Collections.Generic.List[string]]::new()
+$extractJobs = [System.Collections.Generic.List[object]]::new()
 
 foreach ($groupName in $selectedNames) {
     $urls     = $Groups[$groupName]
@@ -307,7 +388,33 @@ foreach ($groupName in $selectedNames) {
     Write-Host ""
 
     foreach ($url in $urls) {
-        Invoke-FileDownload -Url $url -GroupFolder $groupDir -FailedList $failed
+        Invoke-FileDownload -Url $url -GroupFolder $groupDir -FailedList $failed -ExtractList $extractJobs
+    }
+}
+
+# Wait for background unzips still running
+foreach ($x in $extractJobs) {
+    $r = @(Receive-Job -Job $x.Job -Wait -AutoRemoveJob)
+    if ($r.Count -eq 0 -or $r[-1] -ne $true) {
+        $failed.Add($x.Url)
+        Write-Host "  ${Red}✗ extract failed: $($x.Url)${Reset}"
+    }
+}
+
+$HttpClient.Dispose()
+$HttpHandler.Dispose()
+
+# ── Rename ToolsDownloader++ ───────────────────────────────────────────────────
+$toolsDownloader = Get-ChildItem -Path $ssFolder -Recurse -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.BaseName -eq 'ToolsDownloader++' -and $_.Extension -eq '' } |
+    Select-Object -First 1
+
+if ($toolsDownloader) {
+    try {
+        Rename-Item -LiteralPath $toolsDownloader.FullName -NewName 'ToolsDownloader++.exe' -Force -ErrorAction Stop
+        Write-Host "  ${Green}✓ Renamed ToolsDownloader++ -> ToolsDownloader++.exe${Reset}"
+    } catch {
+        Write-Host "  ${Red}✗ Failed to rename ToolsDownloader++: $($_.Exception.Message)${Reset}"
     }
 }
 
