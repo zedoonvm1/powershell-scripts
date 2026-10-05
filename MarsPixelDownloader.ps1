@@ -1,7 +1,8 @@
-#Requires -Version 7.0
-
 [CmdletBinding()]
 param()
+
+# Works on Windows PowerShell 5.1 and PowerShell 7+ (#Requires is ignored by iex, so no #Requires here)
+$IsPS7 = $PSVersionTable.PSVersion.Major -ge 7
 
 # ── Privilege check ───────────────────────────────────────────────────────────
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -27,18 +28,25 @@ try {
 [System.Net.ServicePointManager]::UseNagleAlgorithm = $false
 
 # ── ANSI palette (MarsPixel) ──────────────────────────────────────────────────
-$e          = [char]27
-$Orange     = "${e}[38;2;255;140;0m"
-$Gold       = "${e}[38;2;255;215;0m"
-$DkOrange   = "${e}[38;2;200;90;10m"
-$MarsRed    = "${e}[38;2;180;55;15m"
-$MarsOrange = "${e}[38;2;210;115;55m"
-$MarsCrater = "${e}[38;2;120;30;8m"
-$Gray       = "${e}[38;2;155;155;155m"
-$Green      = "${e}[38;2;80;220;80m"
-$Red        = "${e}[91m"
-$Reset      = "${e}[0m"
-$Bold       = "${e}[1m"
+$e = [char]27
+
+$Orange      = "${e}[38;2;255;140;0m"
+$Gold        = "${e}[38;2;255;215;0m"
+$DkOrange    = "${e}[38;2;200;90;10m"
+$MarsRed     = "${e}[38;2;180;55;15m"
+$MarsOrange  = "${e}[38;2;210;115;55m"
+$MarsCrater  = "${e}[38;2;120;30;8m"
+$Gray        = "${e}[38;2;155;155;155m"
+
+# Aliases so the original menu/summary code keeps working
+$White       = $Gold
+$Grey        = $Orange
+
+$Green       = "${e}[38;2;80;220;80m"
+$Red         = "${e}[91m"
+
+$Reset       = "${e}[0m"
+$Bold        = "${e}[1m"
 
 # ── Tool groups ───────────────────────────────────────────────────────────────
 $Groups = [ordered]@{
@@ -67,7 +75,6 @@ $Groups = [ordered]@{
     )
     'Nirsoft' = @(
         'https://www.nirsoft.net/utils/lastactivityview.zip'
-
     )
     'Generic Tools' = @(
         'https://github.com/winsiderss/si-builds/releases/download/4.0.26245.218/systeminformer-build-canary-setup.exe'
@@ -95,6 +102,7 @@ $Groups = [ordered]@{
     )
 }
 
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 function Get-NextSSFolder {
     $i = 1
@@ -102,143 +110,296 @@ function Get-NextSSFolder {
     return "C:\ss$i"
 }
 
-function Get-FilenameFromUrl {
-    param(
-        [string]$Url,
-        [System.Net.Http.HttpResponseMessage]$Response = $null
-    )
+# ── Native download engine ────────────────────────────────────────────────────
+# Compiled once. Source is C# 5 compatible so it builds on Windows PowerShell 5.1
+# (.NET Framework) and on PowerShell 7 (.NET). Per file (name resolving, unique path,
+# download, retries, zip extract) runs as a .NET async task: no runspace cost per file.
+#  - files >= 8 MB with Accept-Ranges are fetched as 4 parallel ranges into one preallocated file
+#  - streams are fully async, 1 MB copy buffer
+$FastDlSource = @'
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.IO.Compression;
+using System.Net;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 
-    if ($Response -and $Response.Content.Headers.ContentDisposition -and -not [string]::IsNullOrWhiteSpace($Response.Content.Headers.ContentDisposition.FileName)) {
-        return $Response.Content.Headers.ContentDisposition.FileName.Trim('"')
+public static class FastDl
+{
+    public sealed class Result { public string Url; public string Name; public bool Ok; }
+
+    const long SegMin = 8L * 1024 * 1024;
+    const int  Segs   = 4;
+
+    public static Task<Result> Run(HttpClient c, string url, string dir, int buf)
+    {
+        return Task.Run(() => Do(c, url, dir, buf));
     }
 
-    if ($Response -and $Response.RequestMessage -and $Response.RequestMessage.RequestUri) {
-        $finalPath = $Response.RequestMessage.RequestUri.AbsolutePath
-        $finalName = [System.Uri]::UnescapeDataString([System.IO.Path]::GetFileName($finalPath))
-        if (-not [string]::IsNullOrWhiteSpace($finalName) -and [System.IO.Path]::HasExtension($finalName)) {
-            return $finalName
+    static string Clean(string n)
+    {
+        foreach (char ch in Path.GetInvalidFileNameChars()) n = n.Replace(ch, '_');
+        return n;
+    }
+
+    static string NameFromUrl(string url, HttpResponseMessage r)
+    {
+        if (r != null)
+        {
+            var cd = r.Content.Headers.ContentDisposition;
+            if (cd != null && !string.IsNullOrWhiteSpace(cd.FileName)) return Clean(cd.FileName.Trim('"'));
+            var uri = r.RequestMessage != null ? r.RequestMessage.RequestUri : null;
+            if (uri != null)
+            {
+                string n = Uri.UnescapeDataString(Path.GetFileName(uri.AbsolutePath));
+                if (!string.IsNullOrWhiteSpace(n) && Path.HasExtension(n)) return Clean(n);
+            }
+        }
+        if (Regex.IsMatch(url, @"/ToolsDownloader\+\+$")) return "ToolsDownloader++.exe";
+        return Clean(Uri.UnescapeDataString(Path.GetFileName(new Uri(url).AbsolutePath)));
+    }
+
+    static async Task<Result> Do(HttpClient c, string url, string dir, int buf)
+    {
+        string name;
+        try { name = NameFromUrl(url, null); } catch { name = url; }
+        if (string.IsNullOrWhiteSpace(name)) return new Result { Url = url, Name = url, Ok = false };
+
+        for (int attempt = 1; attempt <= 3; attempt++)
+        {
+            string dest = null;        // set only once WE created the file
+            string extractDir = null;
+            bool isZip = false;
+            try
+            {
+                using (var resp = await c.GetAsync(url, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false))
+                {
+                    resp.EnsureSuccessStatusCode();
+
+                    string better = NameFromUrl(url, resp);
+                    if (!string.IsNullOrWhiteSpace(better)) name = better;
+
+                    isZip = name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase);
+                    string baseName = Path.GetFileNameWithoutExtension(name);
+                    string ext = Path.GetExtension(name);
+                    long len = resp.Content.Headers.ContentLength.HasValue ? resp.Content.Headers.ContentLength.Value : -1;
+
+                    bool ranges = false;
+                    foreach (string u in resp.Headers.AcceptRanges)
+                        if (string.Equals(u, "bytes", StringComparison.OrdinalIgnoreCase)) ranges = true;
+                    bool seg = attempt == 1 && ranges && len >= SegMin && resp.Content.Headers.ContentEncoding.Count == 0;
+
+                    // Reserve a unique path atomically (CreateNew).
+                    FileStream fs = null;
+                    for (int n = 1; fs == null; n++)
+                    {
+                        if (n > 1000) throw new IOException("cannot allocate file name");
+                        string suf = n == 1 ? "" : "_" + n;
+                        string cand = Path.Combine(dir, baseName + suf + ext);
+                        string cdir = Path.Combine(dir, baseName + suf);
+                        if (isZip && Directory.Exists(cdir)) continue;
+                        try
+                        {
+                            fs = new FileStream(cand, FileMode.CreateNew, FileAccess.Write, FileShare.ReadWrite,
+                                                4096, FileOptions.Asynchronous | FileOptions.SequentialScan);
+                            dest = cand;
+                            extractDir = cdir;
+                        }
+                        catch (IOException)
+                        {
+                            if (!File.Exists(cand)) throw;
+                        }
+                    }
+
+                    using (fs)
+                    {
+                        if (len > 0) fs.SetLength(len);   // preallocate
+                        if (seg)
+                        {
+                            resp.Dispose();
+                            await Segmented(c, url, dest, len, buf).ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            using (var ns = await resp.Content.ReadAsStreamAsync().ConfigureAwait(false))
+                                await ns.CopyToAsync(fs, buf).ConfigureAwait(false);
+                            if (len > 0 && fs.Length != fs.Position) fs.SetLength(fs.Position);
+                        }
+                    }
+                }
+
+                if (isZip)
+                {
+                    string z = dest, d = extractDir;
+                    await Task.Run(() => Extract(z, d)).ConfigureAwait(false);
+                    File.Delete(dest);
+                    dest = null;
+                }
+                return new Result { Url = url, Name = name, Ok = true };
+            }
+            catch
+            {
+                try { if (dest != null && File.Exists(dest)) File.Delete(dest); } catch { }
+                try { if (isZip && extractDir != null && Directory.Exists(extractDir)) Directory.Delete(extractDir, true); } catch { }
+            }
+            if (attempt < 3) await Task.Delay(400 * attempt).ConfigureAwait(false);
+        }
+        return new Result { Url = url, Name = name, Ok = false };
+    }
+
+    static async Task Segmented(HttpClient c, string url, string path, long len, int buf)
+    {
+        long chunk = (len + Segs - 1) / Segs;
+        var tasks = new List<Task<long>>();
+        for (int i = 0; i < Segs; i++)
+        {
+            long from = i * chunk;
+            long to = Math.Min(len, from + chunk) - 1;
+            if (from > to) break;
+            tasks.Add(Seg(c, url, path, from, to, buf));
+        }
+        long total = 0;
+        foreach (long t in await Task.WhenAll(tasks).ConfigureAwait(false)) total += t;
+        if (total != len) throw new IOException("size mismatch");
+    }
+
+    static async Task<long> Seg(HttpClient c, string url, string path, long from, long to, int buf)
+    {
+        using (var req = new HttpRequestMessage(HttpMethod.Get, url))
+        {
+            req.Headers.Range = new RangeHeaderValue(from, to);
+            using (var r = await c.SendAsync(req, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false))
+            {
+                if (r.StatusCode != HttpStatusCode.PartialContent) throw new IOException("range not honoured");
+                using (var s = await r.Content.ReadAsStreamAsync().ConfigureAwait(false))
+                using (var o = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.ReadWrite,
+                                              4096, FileOptions.Asynchronous))
+                {
+                    o.Seek(from, SeekOrigin.Begin);
+                    var b = new byte[buf];
+                    long pos = from;
+                    int n;
+                    while ((n = await s.ReadAsync(b, 0, b.Length).ConfigureAwait(false)) > 0)
+                    {
+                        await o.WriteAsync(b, 0, n).ConfigureAwait(false);
+                        pos += n;
+                    }
+                    return pos - from;
+                }
+            }
         }
     }
 
-    if ($Url -match '/ToolsDownloader\+\+$') {
-        return 'ToolsDownloader++.exe'
-    }
+    static void Extract(string zip, string dir)
+    {
+        try { ZipFile.ExtractToDirectory(zip, dir); return; } catch { }
 
-    $path = ([System.Uri]$Url).AbsolutePath
-    return [System.Uri]::UnescapeDataString([System.IO.Path]::GetFileName($path))
+        // Fallback for archives with non-standard entries: extract entry by entry.
+        if (Directory.Exists(dir)) Directory.Delete(dir, true);
+        Directory.CreateDirectory(dir);
+        string root = Path.GetFullPath(dir + Path.DirectorySeparatorChar);
+        using (var a = ZipFile.OpenRead(zip))
+        {
+            foreach (var e in a.Entries)
+            {
+                string p = Path.GetFullPath(Path.Combine(dir, e.FullName));
+                if (!p.StartsWith(root, StringComparison.OrdinalIgnoreCase)) continue;
+                if (e.FullName.EndsWith("/") || e.FullName.EndsWith("\\")) { Directory.CreateDirectory(p); continue; }
+                Directory.CreateDirectory(Path.GetDirectoryName(p));
+                e.ExtractToFile(p, true);
+            }
+        }
+    }
+}
+'@
+
+if ($IsPS7) {
+    $refs = @(
+        'System.Net.Http', 'System.Net.Primitives', 'System.IO.Compression', 'System.IO.Compression.ZipFile',
+        'System.Collections', 'System.Text.RegularExpressions', 'System.Threading.Tasks', 'System.Memory',
+        'System.Runtime', 'System.Runtime.InteropServices', 'Microsoft.Win32.Primitives', 'System.Linq'
+    )
+} else {
+    $refs = @('System.Net.Http', 'System.IO.Compression', 'System.IO.Compression.FileSystem')
 }
 
-# ── Shared HTTP client (one connection pool for the whole run) ────────────────
-# Connections + TLS sessions to github.com / objects.githubusercontent.com are reused
-# instead of being re-handshaked for every file.
-$HttpHandler = [System.Net.Http.SocketsHttpHandler]::new()
-$HttpHandler.PooledConnectionLifetime       = [TimeSpan]::FromMinutes(5)
-$HttpHandler.EnableMultipleHttp2Connections = $true
-$HttpHandler.AutomaticDecompression         = [System.Net.DecompressionMethods]'GZip, Deflate, Brotli'
-$HttpHandler.ConnectTimeout                 = [TimeSpan]::FromSeconds(15)
+try {
+    Add-Type -TypeDefinition $FastDlSource -ReferencedAssemblies $refs -ErrorAction Stop
+} catch {
+    Write-Host "  Failed to compile download engine: $($_.Exception.Message)" -ForegroundColor Red
+    exit 1
+}
 
-$HttpClient = [System.Net.Http.HttpClient]::new($HttpHandler)
+# ── Shared HTTP client (one pool; HTTP/2 + Brotli on PS7, HttpClientHandler on 5.1) ──
+if ($IsPS7) {
+    $HttpHandler = [System.Net.Http.SocketsHttpHandler]::new()
+    $HttpHandler.PooledConnectionLifetime       = [TimeSpan]::FromMinutes(5)
+    $HttpHandler.EnableMultipleHttp2Connections = $true
+    $HttpHandler.AutomaticDecompression         = [System.Net.DecompressionMethods]'GZip, Deflate, Brotli'
+    $HttpHandler.ConnectTimeout                 = [TimeSpan]::FromSeconds(15)
+    $HttpHandler.InitialHttp2StreamWindowSize   = 16MB
+    $HttpHandler.MaxConnectionsPerServer        = 64
+} else {
+    $HttpHandler = New-Object System.Net.Http.HttpClientHandler
+    $HttpHandler.AutomaticDecompression = [System.Net.DecompressionMethods]'GZip, Deflate'
+    $HttpHandler.AllowAutoRedirect      = $true
+}
+
+$HttpClient = New-Object System.Net.Http.HttpClient($HttpHandler)
 $HttpClient.Timeout = [TimeSpan]::FromMinutes(10)
+if ($IsPS7) {
+    $HttpClient.DefaultRequestVersion = [Version]'2.0'
+    $HttpClient.DefaultVersionPolicy  = [System.Net.Http.HttpVersionPolicy]::RequestVersionOrLower
+}
 $HttpClient.DefaultRequestHeaders.UserAgent.ParseAdd('MarsPixel-ToolsDownloader/2.0')
 
-$BufferSize = 1048576   # 1 MB writes
+# 1 MB copy buffer
+$BufferSize = 1048576
 
-# Zip extraction runs on a background thread so the NEXT download starts immediately.
-# Downloads themselves stay strictly one at a time.
-$ExtractBlock = {
-    param($Zip, $Dir)
+# Pre-warm DNS + TCP + TLS for every host while the user reads the menu.
+$warmHosts = @($Groups.Values | ForEach-Object { $_ } | ForEach-Object { ([System.Uri]$_).GetLeftPart('Authority') }) +
+             'https://objects.githubusercontent.com', 'https://release-assets.githubusercontent.com' | Select-Object -Unique
+foreach ($h in $warmHosts) {
     try {
-        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
-        [System.IO.Compression.ZipFile]::ExtractToDirectory($Zip, $Dir)
-        $true
-    } catch {
-        try {
-            if (Test-Path $Dir) { Remove-Item $Dir -Recurse -Force -ErrorAction SilentlyContinue }
-            $null = New-Item -ItemType Directory -Path $Dir -Force
-            Expand-Archive -Path $Zip -DestinationPath $Dir -Force
-            $true
-        } catch { $false }
-    } finally {
-        Remove-Item -Path $Zip -Force -ErrorAction SilentlyContinue
-    }
+        $req = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Head, $h)
+        [void]$HttpClient.SendAsync($req, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead)
+    } catch {}
 }
 
-function Invoke-FileDownload {
+# ── Group downloader: all files of ONE group at once; caller runs groups sequentially ──
+function Invoke-GroupDownload {
     param(
-        [string]$Url,
+        [string[]]$Urls,
         [string]$GroupFolder,
-        [System.Collections.Generic.List[string]]$FailedList,
-        [System.Collections.Generic.List[object]]$ExtractList
+        [System.Collections.Generic.List[string]]$FailedList
     )
 
-    $filename = Get-FilenameFromUrl -Url $Url
-    if ([string]::IsNullOrWhiteSpace($filename)) {
-        Write-Host "    ${Red}✗ URL has no downloadable filename: $Url${Reset}"
-        $FailedList.Add($Url)
-        return
+    $tasks = New-Object 'System.Collections.Generic.List[System.Threading.Tasks.Task]'
+    $urlOf = @{}
+    foreach ($u in $Urls) {
+        $t = [FastDl]::Run($HttpClient, $u, $GroupFolder, $BufferSize)
+        $urlOf[$t.Id] = $u
+        $tasks.Add($t)
     }
 
-    Write-Host "    ${DkOrange}↓ ${Orange}$filename${Reset} " -NoNewline
-
-    $ok      = $false
-    $pending = $null
-
-    # Up to 3 attempts per file.
-    for ($attempt = 1; $attempt -le 3 -and -not $ok; $attempt++) {
-        $targetFile = $null
-        $tempZip    = $null
-        try {
-            $response = $HttpClient.GetAsync($Url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
-            [void]$response.EnsureSuccessStatusCode()
-
-            $betterName = Get-FilenameFromUrl -Url $Url -Response $response
-            if (-not [string]::IsNullOrWhiteSpace($betterName)) { $filename = $betterName }
-
-            $isZip    = $filename -match '\.zip$'
-            $baseName = [System.IO.Path]::GetFileNameWithoutExtension($filename)
-            $ext      = [System.IO.Path]::GetExtension($filename)
-
-            # Reserve a unique path atomically (CreateNew).
-            $n = 1
-            while ($true) {
-                $suffix     = if ($n -eq 1) { '' } else { "_$n" }
-                $dest       = Join-Path $GroupFolder ("{0}{1}{2}" -f $baseName, $suffix, $ext)
-                $extractDir = Join-Path $GroupFolder ("{0}{1}" -f $baseName, $suffix)
-                if ($isZip -and (Test-Path $extractDir)) { $n++; continue }
-                try {
-                    $fs = [System.IO.FileStream]::new($dest, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None, $BufferSize, [System.IO.FileOptions]::SequentialScan)
-                    break
-                } catch [System.IO.IOException] { $n++ }
-            }
-            if ($isZip) { $tempZip = $dest } else { $targetFile = $dest }
-
-            $ns = $null
-            try {
-                $ns = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
-                $ns.CopyTo($fs, $BufferSize)
-            } finally {
-                $fs.Dispose()
-                if ($ns) { $ns.Dispose() }
-                $response.Dispose()
-            }
-
-            if ($isZip) {
-                $pending = Start-ThreadJob -ScriptBlock $ExtractBlock -ArgumentList $tempZip, $extractDir
-            }
-            $ok = $true
-        } catch {
-            if ($targetFile -and (Test-Path $targetFile)) { Remove-Item -Path $targetFile -Force -ErrorAction SilentlyContinue }
-            if ($tempZip -and (Test-Path $tempZip))       { Remove-Item -Path $tempZip -Force -ErrorAction SilentlyContinue }
-            if ($attempt -lt 3) { Start-Sleep -Milliseconds (400 * $attempt) }
+    # Print each result the moment its file finishes.
+    while ($tasks.Count -gt 0) {
+        $i = [System.Threading.Tasks.Task]::WaitAny($tasks.ToArray())
+        $t = $tasks[$i]
+        $tasks.RemoveAt($i)
+        $url = $urlOf[$t.Id]
+        $r = $null
+        try { $r = $t.Result } catch {}
+        if ($r -and $r.Ok) {
+            Write-Host "    ${DkOrange}↓ ${Orange}$($r.Name)${Reset} ${Green}✓${Reset}"
+        } else {
+            $name = if ($r) { $r.Name } else { $url }
+            Write-Host "    ${DkOrange}↓ ${Orange}$name${Reset} ${Red}✗${Reset}"
+            $FailedList.Add($url)
         }
-    }
-
-    if ($ok) {
-        Write-Host "${Green}✓${Reset}"
-        if ($pending) { $ExtractList.Add([PSCustomObject]@{ Job = $pending; Url = $Url }) }
-    } else {
-        Write-Host "${Red}✗${Reset}"
-        $FailedList.Add($Url)
     }
 }
 
@@ -260,7 +421,7 @@ function Show-Banner {
     Write-Host "         ${mr}████████████████████${r}"
     Write-Host ""
 
-    # MarsPixel wordmark — gradient gold → dark orange top to bottom
+    # MarsPixel wordmark - gradient gold -> dark orange top to bottom
     Write-Host "${Gold}${Bold}  ███╗   ███╗ █████╗ ██████╗ ███████╗    ██████╗ ██╗██╗  ██╗███████╗██╗      ${Reset}"
     Write-Host "${Gold}${Bold}  ████╗ ████║██╔══██╗██╔══██╗██╔════╝    ██╔══██╗██║╚██╗██╔╝██╔════╝██║      ${Reset}"
     Write-Host "${Orange}${Bold}  ██╔████╔██║███████║██████╔╝███████╗    ██████╔╝██║ ╚███╔╝ █████╗  ██║      ${Reset}"
@@ -278,13 +439,6 @@ Show-Banner
 
 $ssFolder   = Get-NextSSFolder
 $totalTools = ($Groups.Values | ForEach-Object { $_.Count } | Measure-Object -Sum).Sum
-if (-not $totalTools) { $totalTools = 0 }
-
-if ($Groups.Count -eq 0 -or $totalTools -eq 0) {
-    Write-Host "  ${Gray}No tools configured. Add groups to `$Groups and re-run.${Reset}"
-    Write-Host ""
-    exit 0
-}
 
 Write-Host "  ${Orange}Output folder  ${Gold}$ssFolder${Reset}"
 Write-Host "  ${Orange}Total tools    ${Gold}$totalTools${Reset} ${Gray}across $($Groups.Count) groups${Reset}"
@@ -374,9 +528,8 @@ if (-not (Get-Command -Name 'Add-MpPreference' -ErrorAction SilentlyContinue)) {
     }
 }
 
-# ── Download (strictly one by one) ────────────────────────────────────────────
-$failed      = [System.Collections.Generic.List[string]]::new()
-$extractJobs = [System.Collections.Generic.List[object]]::new()
+# ── Download (one group after the other, files inside a group all at once) ────
+$failed = New-Object 'System.Collections.Generic.List[string]'
 
 foreach ($groupName in $selectedNames) {
     $urls     = $Groups[$groupName]
@@ -387,39 +540,43 @@ foreach ($groupName in $selectedNames) {
     Write-Host "  ${Gold}━━━ $groupName ${Gray}($($urls.Count) tools)${Reset}"
     Write-Host ""
 
-    foreach ($url in $urls) {
-        Invoke-FileDownload -Url $url -GroupFolder $groupDir -FailedList $failed -ExtractList $extractJobs
-    }
-}
-
-# Wait for background unzips still running
-foreach ($x in $extractJobs) {
-    $r = @(Receive-Job -Job $x.Job -Wait -AutoRemoveJob)
-    if ($r.Count -eq 0 -or $r[-1] -ne $true) {
-        $failed.Add($x.Url)
-        Write-Host "  ${Red}✗ extract failed: $($x.Url)${Reset}"
-    }
+    Invoke-GroupDownload -Urls $urls -GroupFolder $groupDir -FailedList $failed
 }
 
 $HttpClient.Dispose()
 $HttpHandler.Dispose()
 
 # ── Rename ToolsDownloader++ ───────────────────────────────────────────────────
-$toolsDownloader = Get-ChildItem -Path $ssFolder -Recurse -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.BaseName -eq 'ToolsDownloader++' -and $_.Extension -eq '' } |
+$toolsDownloader = Get-ChildItem -Path $ssFolder `
+    -Recurse `
+    -File `
+    -ErrorAction SilentlyContinue |
+    Where-Object {
+        $_.BaseName -eq 'ToolsDownloader++' -and
+        $_.Extension -eq ''
+    } |
     Select-Object -First 1
 
 if ($toolsDownloader) {
+    $newName = 'ToolsDownloader++.exe'
+
     try {
-        Rename-Item -LiteralPath $toolsDownloader.FullName -NewName 'ToolsDownloader++.exe' -Force -ErrorAction Stop
+        Rename-Item `
+            -LiteralPath $toolsDownloader.FullName `
+            -NewName $newName `
+            -Force `
+            -ErrorAction Stop
+
         Write-Host "  ${Green}✓ Renamed ToolsDownloader++ -> ToolsDownloader++.exe${Reset}"
-    } catch {
+    }
+    catch {
         Write-Host "  ${Red}✗ Failed to rename ToolsDownloader++: $($_.Exception.Message)${Reset}"
     }
 }
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 $succeeded = $totalSelected - $failed.Count
+
 Write-Host ""
 Write-Host "  ${DkOrange}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${Reset}"
 Write-Host "  ${Green}✓ Downloaded : $succeeded / $totalSelected${Reset}"
@@ -428,6 +585,7 @@ if ($failed.Count -gt 0) {
     Write-Host "  ${Red}✗ Failed     : $($failed.Count)${Reset}"
     Write-Host ""
     Write-Host "  ${Red}Failed URLs:${Reset}"
+
     foreach ($f in $failed) {
         Write-Host "    ${Gray}$f${Reset}"
     }
